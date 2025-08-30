@@ -10,7 +10,7 @@ import sys
 import time
 import smtplib
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -46,6 +46,10 @@ EMAIL_TO = os.getenv("EMAIL_TO")
 PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER_KEY")
 PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN")
 
+# Telegram notification settings
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8218022688:AAEeVfxC_TKJaMIQW2D9IeN9Vf0LYOe1Sgk")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 # Validate required environment variables
 if not (BETTER_EMAIL and BETTER_PASSWORD):
     print("ERROR: Missing required environment variables:", file=sys.stderr)
@@ -74,6 +78,30 @@ def send_email(subject: str, body: str):
         print(f"Failed to send email: {e}")
 
 
+def send_telegram(message: str):
+    """Send Telegram notification if configured."""
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+        print("Telegram notification skipped - TELEGRAM_CHAT_ID not configured")
+        print("To get your chat ID, message your bot and visit:")
+        print(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates")
+        return
+    
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        response = requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        })
+        if response.status_code == 200:
+            print("Telegram notification sent successfully")
+        else:
+            print(f"Telegram notification failed: {response.status_code}")
+            print(f"Response: {response.text}")
+    except Exception as e:
+        print(f"Failed to send Telegram notification: {e}")
+
+
 def send_pushover(title: str, message: str):
     """Send Pushover push notification if configured."""
     if not (PUSHOVER_USER_KEY and PUSHOVER_API_TOKEN):
@@ -99,10 +127,32 @@ def send_pushover(title: str, message: str):
         print(f"Failed to send Pushover notification: {e}")
 
 
-def generate_today_url(base_url):
-    """Generate the booking URL for today's date."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    return f"{base_url}/{today}/by-time"
+def get_weekend_dates():
+    """Get the dates for this weekend (Friday, Saturday, Sunday)."""
+    today = datetime.now()
+    
+    # Find the Friday of this week (weekday 4)
+    days_since_friday = (today.weekday() - 4) % 7
+    friday = today - timedelta(days=days_since_friday)
+    
+    # If it's before Friday, get this week's weekend
+    # If it's Friday or later, get this week's weekend
+    weekend_dates = []
+    for i in range(3):  # Friday (0), Saturday (1), Sunday (2)
+        date = friday + timedelta(days=i)
+        weekend_dates.append(date.strftime("%Y-%m-%d"))
+    
+    return weekend_dates
+
+def generate_weekend_urls(base_url):
+    """Generate booking URLs for all weekend dates."""
+    weekend_dates = get_weekend_dates()
+    return [f"{base_url}/{date}/by-time" for date in weekend_dates]
+
+def is_weekend():
+    """Check if today is Friday, Saturday, or Sunday."""
+    today = datetime.now().weekday()
+    return today in [4, 5, 6]  # Friday=4, Saturday=5, Sunday=6
 
 
 def handle_cookie_popup(page):
@@ -404,12 +454,12 @@ def parse_court_availability(html: str):
     return available_slots
 
 
-def check_location(page, location, debug_mode):
-    """Check a specific tennis location for availability."""
+def check_location_for_date(page, location, date_str, debug_mode):
+    """Check a specific tennis location for availability on a specific date."""
     location_name = location["name"]
-    watch_url = generate_today_url(location["base_url"])
+    watch_url = f"{location['base_url']}/{date_str}/by-time"
     
-    print(f"\n🎾 Checking {location_name}...")
+    print(f"\n🎾 Checking {location_name} for {date_str}...")
     print(f"URL: {watch_url}")
     
     try:
@@ -494,24 +544,61 @@ def check_location(page, location, debug_mode):
         }
 
 
+def check_location_all_weekend_dates(page, location, debug_mode):
+    """Check a location for all weekend dates and return combined results."""
+    weekend_dates = get_weekend_dates()
+    all_slots = []
+    location_name = location["name"]
+    
+    for date_str in weekend_dates:
+        try:
+            result = check_location_for_date(page, location, date_str, debug_mode)
+            if result["slots"]:
+                # Add date info to each slot
+                for slot in result["slots"]:
+                    slot["date"] = date_str
+                all_slots.extend(result["slots"])
+        except Exception as e:
+            print(f"Error checking {location_name} for {date_str}: {e}")
+    
+    return {
+        "location": location_name,
+        "slots": all_slots,
+        "error": None if all_slots else "No slots found for any weekend date"
+    }
+
+
 def main():
     """Main function to check for available tennis courts."""
+    # Check if it's weekend (Friday, Saturday, Sunday)
+    if not is_weekend():
+        print(f"Today is not a weekend day. Exiting.")
+        print("This script only runs on Friday, Saturday, and Sunday.")
+        return
+    
     # Check for debug mode
     debug_mode = os.getenv("DEBUG_MODE", "false").lower() == "true"
     
+    weekend_dates = get_weekend_dates()
     print(f"Starting Better tennis court monitor at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Monitoring {len(TENNIS_LOCATIONS)} locations:")
+    print(f"Monitoring {len(TENNIS_LOCATIONS)} locations for weekend dates:")
+    print(f"Weekend dates: {', '.join(weekend_dates)}")
     for location in TENNIS_LOCATIONS:
         print(f"  - {location['name']}")
     print(f"Debug mode: {'ON' if debug_mode else 'OFF'}")
     
     with sync_playwright() as playwright:
         # Launch browser (headless for production, set to False for debugging)
+        print("🔧 Launching browser...")
         browser = playwright.chromium.launch(headless=not debug_mode)
+        print("✅ Browser launched successfully")
+        print("🔧 Creating browser context...")
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
         )
+        print("🔧 Creating new page...")
         page = context.new_page()
+        print("✅ Browser setup complete")
         
         try:
             # Step 1: Login to Better
@@ -522,7 +609,7 @@ def main():
             total_slots_found = 0
             
             for location in TENNIS_LOCATIONS:
-                result = check_location(page, location, debug_mode)
+                result = check_location_all_weekend_dates(page, location, debug_mode)
                 all_results.append(result)
                 if result["slots"]:
                     total_slots_found += len(result["slots"])
@@ -538,7 +625,7 @@ def main():
                     if result["slots"]:
                         message_parts.append(f"\n📍 {result['location']}:")
                         for slot in result["slots"]:
-                            details = f"⏰ {slot['time']}"
+                            details = f"📅 {slot.get('date', 'Unknown date')} | ⏰ {slot['time']}"
                             if slot['price']:
                                 details += f" | 💰 {slot['price']}"
                             details += f" | 🏟️ {slot['spaces']} spaces"
@@ -551,7 +638,13 @@ def main():
                 # Add URLs for each location
                 message_parts.append("\nBooking pages:")
                 for result in all_results:
-                    message_parts.append(f"• {result['location']}: {result['url']}")
+                    for location in TENNIS_LOCATIONS:
+                        if location['name'] == result['location']:
+                            weekend_dates = get_weekend_dates()
+                            for date in weekend_dates:
+                                url = f"{location['base_url']}/{date}/by-time"
+                                message_parts.append(f"• {result['location']} ({date}): {url}")
+                            break
                 
                 message = "\n".join(message_parts)
                 
@@ -559,9 +652,56 @@ def main():
                 print(message)
                 print("="*60)
                 
-                # Send notifications
-                send_email("🎾 Tennis Courts Available!", message)
-                send_pushover("Tennis Courts Available", message)
+                # Send notifications via Telegram (split if too long)
+                telegram_message = f"🎾 <b>Tennis Courts Available!</b>\n\n{message}"
+                
+                # Telegram has a 4096 character limit, so split if needed
+                if len(telegram_message) > 4000:
+                    # Send summary first
+                    summary = f"🎾 <b>Tennis Courts Available!</b>\n\n🎾 FOUND {total_slots_found} AVAILABLE SLOT(S) ACROSS {len([r for r in all_results if r['slots']])} LOCATION(S)!\n\nDetailed breakdown in next messages..."
+                    send_telegram(summary)
+                    
+                    # Send each location separately
+                    for result in all_results:
+                        if result["slots"]:
+                            location_message = f"📍 <b>{result['location']}</b>:\n\n"
+                            for slot in result["slots"]:
+                                details = f"📅 {slot.get('date', 'Unknown date')} | ⏰ {slot['time']}"
+                                if slot['price']:
+                                    details += f" | 💰 {slot['price']}"
+                                details += f" | 🏟️ {slot['spaces']} spaces"
+                                if slot['book_url']:
+                                    details += f"\n🔗 {slot['book_url']}"
+                                location_message += details + "\n\n"
+                            
+                            # Split location message if still too long
+                            if len(location_message) > 4000:
+                                # Send slots in batches
+                                batch_message = f"📍 <b>{result['location']}</b>:\n\n"
+                                for i, slot in enumerate(result["slots"]):
+                                    slot_details = f"📅 {slot.get('date', 'Unknown date')} | ⏰ {slot['time']}"
+                                    if slot['price']:
+                                        slot_details += f" | 💰 {slot['price']}"
+                                    slot_details += f" | 🏟️ {slot['spaces']} spaces"
+                                    if slot['book_url']:
+                                        slot_details += f"\n🔗 {slot['book_url']}"
+                                    slot_details += "\n\n"
+                                    
+                                    if len(batch_message + slot_details) > 3800:
+                                        send_telegram(batch_message)
+                                        batch_message = f"📍 <b>{result['location']}</b> (continued):\n\n" + slot_details
+                                    else:
+                                        batch_message += slot_details
+                                
+                                if batch_message.strip():
+                                    send_telegram(batch_message)
+                            else:
+                                send_telegram(location_message)
+                else:
+                    send_telegram(telegram_message)
+                
+                # send_email("🎾 Tennis Courts Available!", message)  # Disabled in favor of Telegram
+                # send_pushover("Tennis Courts Available", message)  # Disabled in favor of Telegram
                 
                 # Exit with code 1 to indicate slots were found (useful for cron alerts)
                 sys.exit(1)

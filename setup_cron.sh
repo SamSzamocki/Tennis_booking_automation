@@ -6,8 +6,8 @@ echo "🎾 Setting up Tennis Court Monitor to run every 30 minutes..."
 # Get the current directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Create the cron job entry
-CRON_JOB="*/30 * * * * cd $SCRIPT_DIR && /bin/bash -c 'source venv/bin/activate && python watcher.py' >> $SCRIPT_DIR/monitor.log 2>&1"
+# Create the cron job entry - runs every 30 minutes on Friday, Saturday, Sunday only
+CRON_JOB="*/30 * * * 5,6,0 cd $SCRIPT_DIR && /bin/bash -c 'source venv/bin/activate && python watcher.py' >> $SCRIPT_DIR/monitor.log 2>&1"
 
 # Add to crontab
 echo "Adding cron job..."
@@ -16,7 +16,9 @@ echo "Adding cron job..."
 echo "✅ Cron job added successfully!"
 echo ""
 echo "📋 Cron job details:"
-echo "   - Runs every 30 minutes"
+echo "   - Runs every 30 minutes on Friday, Saturday, Sunday only"
+echo "   - Checks all 3 weekend dates (Fri/Sat/Sun)"
+echo "   - Sends Telegram notifications when slots found"
 echo "   - Logs to: $SCRIPT_DIR/monitor.log"
 echo "   - Script location: $SCRIPT_DIR"
 echo ""
