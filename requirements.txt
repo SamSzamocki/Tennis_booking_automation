@@ -1,0 +1,17 @@
+# Tennis Court Booking Automation Dependencies
+
+# Web automation and browser control
+playwright==1.47.0
+
+# Environment variable management
+python-dotenv==1.0.1
+
+# HTML parsing
+beautifulsoup4==4.12.3
+
+# HTTP requests for notifications
+requests==2.32.3
+
+# Email functionality (built-in to Python, but listed for clarity)
+# smtplib - built-in
+# email - built-in
